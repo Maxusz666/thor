@@ -89,7 +89,7 @@ func (p *TxPool) housekeeping() {
 	log.Debug("enter housekeeping")
 	defer log.Debug("leave housekeeping")
 
-	ticker := time.NewTicker(time.Second * 2)
+	ticker := time.NewTicker(time.Second * 1)
 	defer ticker.Stop()
 
 	headBlock := p.repo.BestBlock().Header()
@@ -205,8 +205,8 @@ func (p *TxPool) SubscribeTxEvent(ch chan *TxEvent) event.Subscription {
 	return p.scope.Track(p.txFeed.Subscribe(ch))
 }
 
-func (p *TxPool) add(newTx *tx.Transaction, rejectNonexecutable bool) error {
-	if p.all.Contains(newTx.Hash()) {
+func (p *TxPool) add(newTx *tx.Transaction, rejectNonexecutable bool, localSubmitted bool) error {
+	if p.all.ContainsHash(newTx.Hash()) {
 		// tx already in the pool
 		return nil
 	}
@@ -231,7 +231,7 @@ func (p *TxPool) add(newTx *tx.Transaction, rejectNonexecutable bool) error {
 		return txRejectedError{err.Error()}
 	}
 
-	txObj, err := resolveTx(newTx)
+	txObj, err := resolveTx(newTx, localSubmitted)
 	if err != nil {
 		return badTxError{err.Error()}
 	}
@@ -276,17 +276,30 @@ func (p *TxPool) add(newTx *tx.Transaction, rejectNonexecutable bool) error {
 // Add add new tx into pool.
 // It's not assumed as an error if the tx to be added is already in the pool,
 func (p *TxPool) Add(newTx *tx.Transaction) error {
-	return p.add(newTx, false)
+	return p.add(newTx, false, false)
+}
+
+// AddLocal adds new locally submitted tx into pool.
+func (p *TxPool) AddLocal(newTx *tx.Transaction) error {
+	return p.add(newTx, false, true)
+}
+
+// Get get pooled tx by id.
+func (p *TxPool) Get(id thor.Bytes32) *tx.Transaction {
+	if txObj := p.all.GetByID(id); txObj != nil {
+		return txObj.Transaction
+	}
+	return nil
 }
 
 // StrictlyAdd add new tx into pool. A rejection error will be returned, if tx is not executable at this time.
 func (p *TxPool) StrictlyAdd(newTx *tx.Transaction) error {
-	return p.add(newTx, true)
+	return p.add(newTx, true, false)
 }
 
 // Remove removes tx from pool by its Hash.
 func (p *TxPool) Remove(txHash thor.Bytes32, txID thor.Bytes32) bool {
-	if p.all.Remove(txHash) {
+	if p.all.RemoveByHash(txHash) {
 		log.Debug("tx removed", "id", txID)
 		return true
 	}
@@ -302,7 +315,7 @@ func (p *TxPool) Executables() tx.Transactions {
 }
 
 // Fill fills txs into pool.
-func (p *TxPool) Fill(txs tx.Transactions) {
+func (p *TxPool) Fill(txs tx.Transactions, localSubmitted bool) {
 	txObjs := make([]*txObject, 0, len(txs))
 	for _, tx := range txs {
 		origin, _ := tx.Origin()
@@ -310,7 +323,7 @@ func (p *TxPool) Fill(txs tx.Transactions) {
 			continue
 		}
 		// here we ignore errors
-		if txObj, err := resolveTx(tx); err == nil {
+		if txObj, err := resolveTx(tx, localSubmitted); err == nil {
 			txObjs = append(txObjs, txObj)
 		}
 	}
@@ -335,11 +348,11 @@ func (p *TxPool) wash(headBlock *block.Header) (executables tx.Transactions, rem
 					break
 				}
 				removed++
-				p.all.Remove(txObj.Hash())
+				p.all.RemoveByHash(txObj.Hash())
 			}
 		} else {
 			for _, txObj := range toRemove {
-				p.all.Remove(txObj.Hash())
+				p.all.RemoveByHash(txObj.Hash())
 			}
 			removed = len(toRemove)
 		}
@@ -352,10 +365,12 @@ func (p *TxPool) wash(headBlock *block.Header) (executables tx.Transactions, rem
 	}
 
 	var (
-		chain             = p.repo.NewChain(headBlock.ID())
-		executableObjs    = make([]*txObject, 0, len(all))
-		nonExecutableObjs = make([]*txObject, 0, len(all))
-		now               = time.Now().UnixNano()
+		chain                  = p.repo.NewChain(headBlock.ID())
+		executableObjs         = make([]*txObject, 0, len(all))
+		nonExecutableObjs      = make([]*txObject, 0, len(all))
+		localExecutableObjs    = make([]*txObject, 0, len(all))
+		localNonExecutableObjs = make([]*txObject, 0, len(all))
+		now                    = time.Now().UnixNano()
 	)
 	for _, txObj := range all {
 		if thor.IsOriginBlocked(txObj.Origin()) || p.blocklist.Contains(txObj.Origin()) {
@@ -365,7 +380,7 @@ func (p *TxPool) wash(headBlock *block.Header) (executables tx.Transactions, rem
 		}
 
 		// out of lifetime
-		if now > txObj.timeAdded+int64(p.options.MaxLifetime) {
+		if !txObj.localSubmitted && now > txObj.timeAdded+int64(p.options.MaxLifetime) {
 			toRemove = append(toRemove, txObj)
 			log.Debug("tx washed out", "id", txObj.ID(), "err", "out of lifetime")
 			continue
@@ -386,13 +401,21 @@ func (p *TxPool) wash(headBlock *block.Header) (executables tx.Transactions, rem
 				continue
 			}
 			txObj.overallGasPrice = txObj.OverallGasPrice(baseGasPrice, provedWork)
-			executableObjs = append(executableObjs, txObj)
+			if txObj.localSubmitted {
+				localExecutableObjs = append(localExecutableObjs, txObj)
+			} else {
+				executableObjs = append(executableObjs, txObj)
+			}
 		} else {
-			nonExecutableObjs = append(nonExecutableObjs, txObj)
+			if txObj.localSubmitted {
+				localNonExecutableObjs = append(localNonExecutableObjs, txObj)
+			} else {
+				nonExecutableObjs = append(nonExecutableObjs, txObj)
+			}
 		}
 	}
 
-	// sort objs by price from high to low
+	// sort objs by price from high to low.
 	sortTxObjsByOverallGasPriceDesc(executableObjs)
 
 	limit := p.options.Limit
@@ -416,12 +439,17 @@ func (p *TxPool) wash(headBlock *block.Header) (executables tx.Transactions, rem
 		}
 	}
 
+	// Concate executables.
+	executableObjs = append(executableObjs, localExecutableObjs...)
+	// Sort will be faster (part of it already sorted).
+	sortTxObjsByOverallGasPriceDesc(executableObjs)
+
 	executables = make(tx.Transactions, 0, len(executableObjs))
 	var toBroadcast tx.Transactions
 
 	for _, obj := range executableObjs {
 		executables = append(executables, obj.Transaction)
-		if !obj.executable {
+		if !obj.executable || obj.localSubmitted {
 			obj.executable = true
 			toBroadcast = append(toBroadcast, obj.Transaction)
 		}

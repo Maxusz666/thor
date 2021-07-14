@@ -8,14 +8,16 @@
 package muxdb
 
 import (
+	"io"
+
 	"github.com/syndtr/goleveldb/leveldb"
 	dberrors "github.com/syndtr/goleveldb/leveldb/errors"
 	"github.com/syndtr/goleveldb/leveldb/filter"
 	"github.com/syndtr/goleveldb/leveldb/opt"
 	"github.com/syndtr/goleveldb/leveldb/storage"
+	"github.com/syndtr/goleveldb/leveldb/util"
 	"github.com/vechain/thor/kv"
 	"github.com/vechain/thor/thor"
-	"io"
 )
 
 const (
@@ -45,6 +47,9 @@ type Options struct {
 	ReadCacheMB int
 	// WriteBufferMB is the size of write buffer for underlying database.
 	WriteBufferMB int
+	// PermanentTrie if set to true, tries always commit nodes into permanent space, so pruner
+	// will have no effect.
+	PermanentTrie bool
 	// DisablePageCache Disable page cache for database file.
 	// It's for test purpose only.
 	DisablePageCache bool
@@ -56,24 +61,24 @@ type MuxDB struct {
 	trieCache     *trieCache
 	trieLiveSpace *trieLiveSpace
 	storageCloser io.Closer
+	permanentTrie bool
 }
 
 // Open opens or creates DB at the given path.
 func Open(path string, options *Options) (*MuxDB, error) {
 	// prepare leveldb options
 	ldbOpts := opt.Options{
-		OpenFilesCacheCapacity: options.OpenFilesCacheCapacity,
-		BlockCacheCapacity:     options.ReadCacheMB * opt.MiB,
-		WriteBuffer:            options.WriteBufferMB * opt.MiB,
-		Filter:                 filter.NewBloomFilter(10),
-		BlockSize:              1024 * 32, // balance performance of point reads and compression ratio.
-		DisableSeeksCompaction: true,
-		KeyVolatile: func(key []byte) bool {
-			switch key[0] {
-			case trieSpaceA, trieSpaceB, trieSecureKeySpace:
-				return true
-			}
-			return false
+		OpenFilesCacheCapacity:        options.OpenFilesCacheCapacity,
+		BlockCacheCapacity:            options.ReadCacheMB * opt.MiB,
+		WriteBuffer:                   options.WriteBufferMB * opt.MiB,
+		Filter:                        filter.NewBloomFilter(10),
+		BlockSize:                     1024 * 32, // balance performance of point reads and compression ratio.
+		DisableSeeksCompaction:        true,
+		CompactionTableSizeMultiplier: 2,
+		VibrantKeys: []*util.Range{
+			util.BytesPrefix([]byte{trieSpaceA}),
+			util.BytesPrefix([]byte{trieSpaceB}),
+			util.BytesPrefix([]byte{trieSecureKeySpace}),
 		},
 	}
 
@@ -109,6 +114,7 @@ func Open(path string, options *Options) (*MuxDB, error) {
 			options.DecodedTrieNodeCacheCapacity),
 		trieLiveSpace: trieLiveSpace,
 		storageCloser: storage,
+		permanentTrie: options.PermanentTrie,
 	}, nil
 }
 
@@ -150,6 +156,7 @@ func (db *MuxDB) NewTrie(name string, root thor.Bytes32) *Trie {
 		db.trieCache,
 		false,
 		db.trieLiveSpace,
+		db.permanentTrie,
 	)
 }
 
@@ -163,6 +170,7 @@ func (db *MuxDB) NewSecureTrie(name string, root thor.Bytes32) *Trie {
 		db.trieCache,
 		true,
 		db.trieLiveSpace,
+		db.permanentTrie,
 	)
 }
 

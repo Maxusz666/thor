@@ -10,14 +10,14 @@ require (
 	github.com/cespare/xxhash v1.1.0 // indirect
 	github.com/coocood/freecache v1.1.1-0.20191203093230-cf06d5fa0ac1
 	github.com/davecgh/go-spew v1.1.0
-	github.com/deckarep/golang-set v0.0.0-20171013212420-1d4478f51bed // indirect
+	github.com/deckarep/golang-set v1.7.1 // indirect
 	github.com/elastic/gosigar v0.10.5
 	github.com/elazarl/go-bindata-assetfs v1.0.0
 	github.com/ethereum/go-ethereum v1.8.14
 	github.com/fatih/color v1.7.0 // indirect
 	github.com/go-stack/stack v1.7.0 // indirect
 	github.com/gorilla/context v0.0.0-20160226214623-1ea25387ff6f // indirect
-	github.com/gorilla/handlers v1.3.0
+	github.com/gorilla/handlers v1.5.1
 	github.com/gorilla/mux v1.6.0
 	github.com/gorilla/websocket v1.3.0
 	github.com/hashicorp/golang-lru v0.0.0-20160813221303-0a025b7e63ad
@@ -27,23 +27,21 @@ require (
 	github.com/mattn/go-colorable v0.0.9 // indirect
 	github.com/mattn/go-isatty v0.0.3
 	github.com/mattn/go-runewidth v0.0.4 // indirect
-	github.com/mattn/go-sqlite3 v1.10.0
+	github.com/mattn/go-sqlite3 v1.14.1
 	github.com/mattn/go-tty v0.0.0-20180219170247-931426f7535a
 	github.com/pborman/uuid v0.0.0-20170612153648-e790cca94e6c
 	github.com/pkg/errors v0.8.0
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/rjeczalik/notify v0.9.1 // indirect
 	github.com/stretchr/testify v1.1.4
-	github.com/syndtr/goleveldb v1.0.1-0.20190923125748-758128399b1d
-	golang.org/x/crypto v0.0.0-20191011191535-87dc89f01550
-	golang.org/x/net v0.0.0-20190620200207-3b0461eec859 // indirect
-	golang.org/x/sync v0.0.0-20190423024810-112230192c58 // indirect
-	golang.org/x/sys v0.0.0-20191204072324-ce4227a45e2e // indirect
+	github.com/syndtr/goleveldb v1.0.1-0.20200815110645-5c35d600f0ca
+	golang.org/x/crypto v0.0.0-20200622213623-75b288015ac9
+	golang.org/x/sys v0.0.0-20200814200057-3d37ad5750ed
 	gopkg.in/cheggaaa/pb.v1 v1.0.28
 	gopkg.in/karalabe/cookiejar.v2 v2.0.0-20150724131613-8dcd6a7f4951
 	gopkg.in/olebedev/go-duktape.v3 v3.0.0-20180723110524-d53328019b21
 	gopkg.in/urfave/cli.v1 v1.20.0
-	gopkg.in/yaml.v2 v2.2.2
+	gopkg.in/yaml.v2 v2.3.0
 )
 
-replace github.com/syndtr/goleveldb v1.0.1-0.20190923125748-758128399b1d => github.com/qianbin/goleveldb v1.0.1-0.20191124163202-7356cd382be0
+replace github.com/syndtr/goleveldb => github.com/vechain/goleveldb v1.0.1-0.20200918014306-20f0a95f6dd4

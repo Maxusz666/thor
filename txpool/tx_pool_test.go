@@ -7,6 +7,7 @@ package txpool
 
 import (
 	"encoding/hex"
+	"fmt"
 	"testing"
 	"time"
 
@@ -22,26 +23,29 @@ import (
 	Tx "github.com/vechain/thor/tx"
 )
 
+const LIMIT = 10
+const LIMIT_PER_ACCOUNT = 2
+
 func init() {
 	log15.Root().SetHandler(log15.DiscardHandler())
 }
 
-func newPool() *TxPool {
+func newPool(limit int, limitPerAccount int) *TxPool {
 	db := muxdb.NewMem()
 	repo := newChainRepo(db)
 	return New(repo, state.NewStater(db), Options{
-		Limit:           10,
-		LimitPerAccount: 2,
+		Limit:           limit,
+		LimitPerAccount: limitPerAccount,
 		MaxLifetime:     time.Hour,
 	})
 }
 func TestNewClose(t *testing.T) {
-	pool := newPool()
+	pool := newPool(LIMIT, LIMIT_PER_ACCOUNT)
 	defer pool.Close()
 }
 
 func TestSubscribeNewTx(t *testing.T) {
-	pool := newPool()
+	pool := newPool(LIMIT, LIMIT_PER_ACCOUNT)
 	defer pool.Close()
 
 	b1 := new(block.Builder).
@@ -66,19 +70,20 @@ func TestSubscribeNewTx(t *testing.T) {
 }
 
 func TestWashTxs(t *testing.T) {
-	pool := newPool()
+	pool := newPool(1, LIMIT_PER_ACCOUNT)
 	defer pool.Close()
+
 	txs, _, err := pool.wash(pool.repo.BestBlock().Header())
 	assert.Nil(t, err)
 	assert.Zero(t, len(txs))
 	assert.Zero(t, len(pool.Executables()))
 
-	tx := newTx(pool.repo.ChainTag(), nil, 21000, tx.BlockRef{}, 100, nil, tx.Features(0), genesis.DevAccounts()[0])
-	assert.Nil(t, pool.Add(tx))
+	tx1 := newTx(pool.repo.ChainTag(), nil, 21000, tx.BlockRef{}, 100, nil, tx.Features(0), genesis.DevAccounts()[0])
+	assert.Nil(t, pool.AddLocal(tx1)) // this tx won't participate in the wash out.
 
 	txs, _, err = pool.wash(pool.repo.BestBlock().Header())
 	assert.Nil(t, err)
-	assert.Equal(t, Tx.Transactions{tx}, txs)
+	assert.Equal(t, Tx.Transactions{tx1}, txs)
 
 	b1 := new(block.Builder).
 		ParentID(pool.repo.GenesisBlock().Header().ID()).
@@ -91,11 +96,24 @@ func TestWashTxs(t *testing.T) {
 
 	txs, _, err = pool.wash(pool.repo.BestBlock().Header())
 	assert.Nil(t, err)
-	assert.Equal(t, Tx.Transactions{tx}, txs)
+	assert.Equal(t, Tx.Transactions{tx1}, txs)
+
+	tx2 := newTx(pool.repo.ChainTag(), nil, 21000, tx.BlockRef{}, 100, nil, tx.Features(0), genesis.DevAccounts()[1])
+	txObj2, _ := resolveTx(tx2, false)
+	assert.Nil(t, pool.all.Add(txObj2, LIMIT_PER_ACCOUNT)) // this tx will participate in the wash out.
+
+	tx3 := newTx(pool.repo.ChainTag(), nil, 21000, tx.BlockRef{}, 100, nil, tx.Features(0), genesis.DevAccounts()[2])
+	txObj3, _ := resolveTx(tx3, false)
+	assert.Nil(t, pool.all.Add(txObj3, LIMIT_PER_ACCOUNT)) // this tx will participate in the wash out.
+
+	txs, removedCount, err := pool.wash(pool.repo.BestBlock().Header())
+	assert.Nil(t, err)
+	assert.Equal(t, 2, len(txs))
+	assert.Equal(t, 1, removedCount)
 }
 
 func TestAdd(t *testing.T) {
-	pool := newPool()
+	pool := newPool(LIMIT, LIMIT_PER_ACCOUNT)
 	defer pool.Close()
 	b1 := new(block.Builder).
 		ParentID(pool.repo.GenesisBlock().Header().ID()).
@@ -128,7 +146,9 @@ func TestAdd(t *testing.T) {
 		}
 	}
 
-	raw, _ := hex.DecodeString("f8dc81a484aabbccdd20f840df947567d83b7b8d80addcb281a71d54fc7b3364ffed82271086000000606060df947567d83b7b8d80addcb281a71d54fc7b3364ffed824e20860000006060608180830334508083bc614ec20108b88256e32450c1907f627d2c11fe5a9d0216be1712f4938b5feb04e37edef236c56266c3378acf97994beff22698b70023f486645d29cb23b479a7b044f7c6b104d2000584fcb3964446d4d832dcc849e2d76ea7e04a4ebdc3a4b61e7997e93277363d4e7fe9315e7f6dd8d9c0a8bff5879503f5c04adab8b08772499e74d34f67923501")
+	raw, _ := hex.DecodeString(fmt.Sprintf("f8dc81%v84aabbccdd20f840df947567d83b7b8d80addcb281a71d54fc7b3364ffed82271086000000606060df947567d83b7b8d80addcb281a71d54fc7b3364ffed824e20860000006060608180830334508083bc614ec20108b88256e32450c1907f627d2c11fe5a9d0216be1712f4938b5feb04e37edef236c56266c3378acf97994beff22698b70023f486645d29cb23b479a7b044f7c6b104d2000584fcb3964446d4d832dcc849e2d76ea7e04a4ebdc3a4b61e7997e93277363d4e7fe9315e7f6dd8d9c0a8bff5879503f5c04adab8b08772499e74d34f67923501",
+		hex.EncodeToString([]byte{pool.repo.ChainTag()}),
+	))
 	var badReserved *Tx.Transaction
 	if err := rlp.DecodeBytes(raw, &badReserved); err != nil {
 		t.Error(err)
@@ -138,7 +158,8 @@ func TestAdd(t *testing.T) {
 		tx     *Tx.Transaction
 		errStr string
 	}{
-		{newTx(pool.repo.ChainTag(), nil, 21000, tx.NewBlockRef(200), 100, nil, Tx.Features(0), acc), "tx rejected: tx is not executable"},
+		{newTx(pool.repo.ChainTag(), nil, 21000, tx.NewBlockRef(10), 100, nil, Tx.Features(0), acc), "tx rejected: tx is not executable"},
+		{newTx(pool.repo.ChainTag(), nil, 21000, tx.NewBlockRef(100), 100, nil, Tx.Features(0), acc), "tx rejected: block ref out of schedule"},
 		{newTx(pool.repo.ChainTag(), nil, 21000, tx.BlockRef{}, 100, &thor.Bytes32{1}, Tx.Features(0), acc), "tx rejected: tx is not executable"},
 		{newTx(pool.repo.ChainTag(), nil, 21000, tx.BlockRef{}, 100, &thor.Bytes32{1}, Tx.Features(2), acc), "tx rejected: unsupported features"},
 		{badReserved, "tx rejected: unsupported features"},

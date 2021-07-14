@@ -18,6 +18,9 @@ import (
 	"github.com/vechain/thor/tx"
 )
 
+// gasLimitSoftLimit is the soft limit of the adaptive block gaslimit.
+const gasLimitSoftLimit uint64 = 21000000
+
 func (n *Node) packerLoop(ctx context.Context) {
 	log.Debug("enter packer loop")
 	defer log.Debug("leave packer loop")
@@ -43,6 +46,10 @@ func (n *Node) packerLoop(ctx context.Context) {
 		if n.targetGasLimit == 0 {
 			// no preset, use suggested
 			suggested := n.bandwidth.SuggestGasLimit()
+			// apply soft limit in adaptive mode
+			if suggested > gasLimitSoftLimit {
+				suggested = gasLimitSoftLimit
+			}
 			n.packer.SetTargetGasLimit(suggested)
 		}
 
@@ -66,30 +73,34 @@ func (n *Node) packerLoop(ctx context.Context) {
 		}
 		log.Debug("scheduled to pack block", "after", time.Duration(flow.When()-now)*time.Second)
 
-		const halfBlockInterval = thor.BlockInterval / 2
-
 		for {
-			now := uint64(time.Now().Unix())
-			if flow.When() > now+halfBlockInterval {
-				delaySec := flow.When() - (now + halfBlockInterval)
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C():
-					if n.repo.BestBlock().Header().TotalScore() > flow.TotalScore() {
-						log.Debug("re-schedule packer due to new best block")
-						goto RE_SCHEDULE
-					}
-				case <-time.After(time.Duration(delaySec) * time.Second):
-					goto PACK
+			if uint64(time.Now().Unix())+thor.BlockInterval/2 > flow.When() {
+				// time to pack block
+				// blockInterval/2 early to allow more time for processing txs
+				if err := n.pack(flow); err != nil {
+					log.Error("failed to pack block", "err", err)
 				}
-			} else {
-				goto PACK
+				break
 			}
-		}
-	PACK:
-		if err := n.pack(flow); err != nil {
-			log.Error("failed to pack block", "err", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
+				best := n.repo.BestBlock().Header()
+				/*  re-schedule regarding the following two conditions:
+				1. parent block needs to update and the new best is not proposed by the same one
+				2. best block is better than the block to be proposed
+				*/
+
+				s1, _ := best.Signer()
+				s2, _ := flow.ParentHeader().Signer()
+
+				if (best.Number() == flow.ParentHeader().Number() && s1 != s2) ||
+					best.TotalScore() > flow.TotalScore() {
+					log.Debug("re-schedule packer due to new best block")
+					goto RE_SCHEDULE
+				}
+			}
 		}
 	RE_SCHEDULE:
 	}
@@ -123,11 +134,7 @@ func (n *Node) pack(flow *packer.Flow) error {
 	}
 	execElapsed := mclock.Now() - startTime
 
-	if _, err := stage.Commit(); err != nil {
-		return errors.WithMessage(err, "commit state")
-	}
-
-	prevTrunk, curTrunk, err := n.commitBlock(newBlock, receipts)
+	prevTrunk, curTrunk, err := n.commitBlock(stage, newBlock, receipts)
 	if err != nil {
 		return errors.WithMessage(err, "commit block")
 	}

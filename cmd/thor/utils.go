@@ -248,7 +248,12 @@ func makeInstanceDir(ctx *cli.Context, gene *genesis.Genesis) (string, error) {
 		return "", fmt.Errorf("unable to infer default data dir, use -%s to specify", dataDirFlag.Name)
 	}
 
-	instanceDir := filepath.Join(dataDir, fmt.Sprintf("instance-%x-v2", gene.ID().Bytes()[24:]))
+	suffix := ""
+	if ctx.Bool(disablePrunerFlag.Name) {
+		suffix = "-full"
+	}
+
+	instanceDir := filepath.Join(dataDir, fmt.Sprintf("instance-%x-v2", gene.ID().Bytes()[24:])+suffix)
 	if err := os.MkdirAll(instanceDir, 0700); err != nil {
 		return "", errors.Wrapf(err, "create instance dir [%v]", instanceDir)
 	}
@@ -272,10 +277,11 @@ func openMainDB(ctx *cli.Context, dir string) (*muxdb.MuxDB, error) {
 	path := filepath.Join(dir, "main.db")
 	db, err := muxdb.Open(path, &muxdb.Options{
 		EncodedTrieNodeCacheSizeMB:   cacheMB,
-		DecodedTrieNodeCacheCapacity: 8192,
+		DecodedTrieNodeCacheCapacity: 65536,
 		OpenFilesCacheCapacity:       fdCache,
 		ReadCacheMB:                  256, // rely on os page cache other than huge db read cache.
 		WriteBufferMB:                128,
+		PermanentTrie:                ctx.Bool(disablePrunerFlag.Name),
 	})
 	if err != nil {
 		return nil, errors.Wrapf(err, "open main database [%v]", path)
@@ -570,15 +576,6 @@ func printSoloStartupMessage(
 	apiURL string,
 	forkConfig thor.ForkConfig,
 ) {
-	tableHead := `
-┌────────────────────────────────────────────┬────────────────────────────────────────────────────────────────────┐
-│                   Address                  │                             Private Key                            │`
-	tableContent := `
-├────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────┤
-│ %v │ %v │`
-	tableEnd := `
-└────────────────────────────────────────────┴────────────────────────────────────────────────────────────────────┘`
-
 	bestBlock := repo.BestBlock()
 
 	info := fmt.Sprintf(`Starting %v
@@ -586,23 +583,17 @@ func printSoloStartupMessage(
     Best block  [ %v #%v @%v ]
     Forks       [ %v ]
     Data dir    [ %v ]
-    API portal  [ %v ]`,
+    API portal  [ %v ]
+┌──────────────────┬───────────────────────────────────────────────────────────────────────────────┐
+│  Mnemonic Words  │  denial kitchen pet squirrel other broom bar gas better priority spoil cross  │
+└──────────────────┴───────────────────────────────────────────────────────────────────────────────┘
+`,
 		common.MakeName("Thor solo", fullVersion()),
 		gene.ID(), gene.Name(),
 		bestBlock.Header().ID(), bestBlock.Header().Number(), time.Unix(int64(bestBlock.Header().Timestamp()), 0),
 		forkConfig,
 		dataDir,
 		apiURL)
-
-	info += tableHead
-
-	for _, a := range genesis.DevAccounts() {
-		info += fmt.Sprintf(tableContent,
-			a.Address,
-			thor.BytesToBytes32(crypto.FromECDSA(a.PrivateKey)),
-		)
-	}
-	info += tableEnd + "\r\n"
 
 	fmt.Print(info)
 }
